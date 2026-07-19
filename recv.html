@@ -341,6 +341,7 @@
       App._framesInFlight--;
       if (data.error && !data.nodata && !data.failed_extract) {
         App._dbg_errors = (App._dbg_errors || 0) + 1;
+        if (App._dbg_errors <= 3) App.setStatus('err: ' + JSON.stringify(data.res).slice(0, 80));
       }
       if (data.nodata) { App._dbg_nodata = (App._dbg_nodata || 0) + 1; }
       if (data.failed_extract) { App._dbg_failext = (App._dbg_failext || 0) + 1; }
