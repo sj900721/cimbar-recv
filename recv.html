@@ -288,16 +288,17 @@
     initWorkers: function(n) {
       App._workers = [];
       let readyCount = 0;
+      let cameraStarted = false;
+      const startCamera = () => { if (!cameraStarted) { cameraStarted = true; App.initCamera(); } };
       const workerReady = new Promise(resolve => { App._workerReady = resolve; });
       for (let i = 0; i < n; i++) {
         const w = new Worker('recv-worker.js');
         w.onmessage = (e) => App.onWorkerMessage(i, e.data);
-        w.onerror = (e) => console.error('Worker ' + i + ' error:', e);
+        w.onerror = (e) => { console.error('Worker ' + i + ' error:', e); startCamera(); };
         App._workers.push(w);
       }
-      workerReady.then(() => {
-        App.initCamera();
-      });
+      workerReady.then(startCamera);
+      setTimeout(startCamera, 3000);
     },
 
     initCamera: function() {
