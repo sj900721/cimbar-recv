@@ -334,19 +334,20 @@
           frameRate: { ideal: 15 }
         }
       };
+      App.setStatus('Requesting camera...');
       navigator.mediaDevices.getUserMedia(constraints)
+        .catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }))
         .then(stream => {
           video.srcObject = stream;
           video.play();
           if (video.requestVideoFrameCallback) {
             video.requestVideoFrameCallback(App.onFrame);
           } else {
-            // Fallback for iOS < 15.4
             App._intervalId = setInterval(() => {
               if (!App._video.paused && !App._video.ended) {
                 App.onFrame(performance.now(), null);
               }
-            }, 66); // ~15 fps
+            }, 66);
           }
           App.setStatus('Scanning...');
         })
