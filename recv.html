@@ -487,7 +487,11 @@
     }
   };
 
-  var Module = {};
+  var Module = {
+    locateFile: function(path) {
+      return 'vendor/' + path;
+    }
+  };
   Module.onRuntimeInitialized = () => {
     App.init();
   };
