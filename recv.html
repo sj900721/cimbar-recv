@@ -216,17 +216,20 @@
       },
       on_decode: function(buff) {
         if (!buff.length) return;
-        const fb = fountain_buff();
-        fb.set(buff);
-        const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
-        const report = Sink.get_report();
-        if (Array.isArray(report)) {
-          App.renderProgress(report);
-        }
-        if (res > 0) {
-          const id = Number(res & 0xFFFFFFFFn);
-          Sink.on_stream_complete(id);
-        }
+        if (!_fountainBuff) Sink.allocate();
+        try {
+          const fb = fountain_buff();
+          fb.set(buff);
+          const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
+          const report = Sink.get_report();
+          if (Array.isArray(report)) {
+            App.renderProgress(report);
+          }
+          if (res > 0) {
+            const id = Number(res & 0xFFFFFFFFn);
+            Sink.on_stream_complete(id);
+          }
+        } catch(e) { App.setStatus('decode err: ' + e.message); }
       },
       get_report: function() {
         if (!_errBuff) _errBuff = Module._malloc(_errBuffSize);
