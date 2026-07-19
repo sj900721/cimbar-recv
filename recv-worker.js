@@ -3,6 +3,9 @@ let _buffs = {};
 
 var Module = {
   preRun: [],
+  locateFile: function(path) {
+    return self.location.href.replace(/recv-worker\.js.*/, '') + 'vendor/' + path;
+  },
   onRuntimeInitialized: function() {
     _wasmInitialized = true;
     self.postMessage({ type: 'startWasm', ready: "ready!" });
