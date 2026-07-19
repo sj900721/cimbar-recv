@@ -339,14 +339,25 @@
 
     onWorkerMessage: function(id, data) {
       App._framesInFlight--;
+      if (data.error && !data.nodata && !data.failed_extract) {
+        App._dbg_errors = (App._dbg_errors || 0) + 1;
+      }
+      if (data.nodata) { App._dbg_nodata = (App._dbg_nodata || 0) + 1; }
+      if (data.failed_extract) { App._dbg_failext = (App._dbg_failext || 0) + 1; }
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
       if (data.buff && data.buff.length > 0) {
+        App._dbg_decoded = (App._dbg_decoded || 0) + 1;
         App._recentDecode = App._counter;
         App.setMode(data.mode);
         Sink.on_decode(data.buff);
       }
-      document.getElementById('frame-counter').textContent = 'Frames: ' + App._counter;
+      const f = App._counter;
+      const nd = App._dbg_nodata || 0;
+      const fe = App._dbg_failext || 0;
+      const dec = App._dbg_decoded || 0;
+      const err = App._dbg_errors || 0;
+      document.getElementById('frame-counter').textContent = `F:${f} nd:${nd} fe:${fe} dec:${dec} err:${err}`;
     },
 
     onFrame: function(now, metadata) {
