@@ -531,10 +531,11 @@
       Assembler.manifest = null;
       Assembler.completedChunks.clear();
       Assembler._done = false;
+      App._receivingManifest = false;
       document.getElementById('done-overlay').classList.remove('visible');
       App.hideStreamProgress();
       document.getElementById('chunks-overview').classList.remove('visible');
-      App.setStatus('Cleared. Scanning...');
+      App.setStatus('Scanning for signal...');
     }
   };
 
