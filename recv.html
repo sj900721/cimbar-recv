@@ -28,9 +28,10 @@
     .chunk-bar .fill.done { background: #50c878; }
     #start-btn {
       position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-      padding: 16px 32px; font-size: 18px; background: #4a90e2; color: white;
+      padding: 16px 32px; font-size: 18px; background: #50c878; color: #000;
       border: none; border-radius: 8px; cursor: pointer;
     }
+    #start-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
     #done-overlay {
       display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;
       background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
