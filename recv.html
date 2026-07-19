@@ -221,12 +221,14 @@
           const fb = fountain_buff();
           fb.set(buff);
           const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
+          App._dbg_lastRes = res;
           const report = Sink.get_report();
           if (Array.isArray(report)) {
             App.renderProgress(report);
           }
           if (res > 0) {
             const id = Number(res & 0xFFFFFFFFn);
+            App.setStatus('Stream complete id=' + id);
             Sink.on_stream_complete(id);
           }
         } catch(e) { App.setStatus('decode err: ' + e.message); }
@@ -379,7 +381,8 @@
       const fe = App._dbg_failext || 0;
       const dec = App._dbg_decoded || 0;
       const err = App._dbg_errors || 0;
-      document.getElementById('frame-counter').textContent = `F:${f} nd:${nd} fe:${fe} dec:${dec} err:${err}`;
+      const res = App._dbg_lastRes || 0;
+      document.getElementById('frame-counter').textContent = `F:${f} nd:${nd} fe:${fe} dec:${dec} err:${err} res:${res}`;
     },
 
     onFrame: function(now, metadata) {
