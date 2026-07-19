@@ -51,7 +51,7 @@
     <span id="frame-counter">Frames: 0</span>
   </div>
   <div id="progress-container"></div>
-  <button id="start-btn" onclick="App.start()">Start Scanning</button>
+  <button id="start-btn" onclick="App.start()" disabled>Start Scanning</button>
   <div id="done-overlay">
     <div>&#x2705; Transfer Complete!</div>
     <div id="done-filename" style="font-size:14px;color:#aaa;"></div>
@@ -264,47 +264,63 @@
 
     init: async function() {
       await ChunkStore.open();
-      // Restore any previously received chunks
       const saved = await ChunkStore.getAllChunks();
       for (const chunk of saved) {
         Assembler.completedChunks.set(chunk.encodeId, { name: chunk.name, bytes: chunk.bytes });
       }
-      if (saved.length > 0) {
-        App.setStatus('Restored ' + saved.length + ' previously received chunk(s). Resume scanning.');
-      } else {
-        App.setStatus('Ready. Tap "Start Scanning".');
-      }
+      App.setStatus('Loading... please wait');
+      App._savedChunksOnInit = saved.length;
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./recv-sw.js');
       }
+      App.preloadWorkers();
+    },
+
+    preloadWorkers: function() {
+      App._preloadWorkers = [];
+      let readyCount = 0;
+      for (let i = 0; i < 4; i++) {
+        const w = new Worker('recv-worker.js');
+        w.onmessage = (e) => {
+          if (e.data && e.data.ready) {
+            readyCount++;
+            if (readyCount === 1) {
+              const btn = document.getElementById('start-btn');
+              btn.disabled = false;
+              if (App._savedChunksOnInit > 0) {
+                App.setStatus('Restored ' + App._savedChunksOnInit + ' chunk(s). Tap "Start Scanning".');
+              } else {
+                App.setStatus('Ready. Tap "Start Scanning".');
+              }
+            }
+          }
+        };
+        w.onerror = (e) => console.error('preload worker error', e);
+        App._preloadWorkers.push(w);
+      }
+      setTimeout(() => {
+        if (document.getElementById('start-btn').disabled) {
+          document.getElementById('start-btn').disabled = false;
+          App.setStatus('Ready. Tap "Start Scanning".');
+        }
+      }, 20000);
     },
 
     start: function() {
       document.getElementById('start-btn').style.display = 'none';
       App._video = document.getElementById('video');
       App.initWorkers(4);
+      App.initCamera();
     },
 
     initWorkers: function(n) {
-      App._workers = [];
-      let readyCount = 0;
-      let cameraStarted = false;
-      const startCamera = () => { if (!cameraStarted) { cameraStarted = true; App.initCamera(); } };
-      for (let i = 0; i < n; i++) {
-        const w = new Worker('recv-worker.js');
-        w.onmessage = (e) => {
-          if (e.data && e.data.ready) {
-            readyCount++;
-            if (readyCount === 1) startCamera();
-          } else {
-            App.onWorkerMessage(i, e.data);
-          }
-        };
-        w.onerror = (e) => { console.error('Worker ' + i + ' error:', e); App.setStatus('Worker error, retrying...'); startCamera(); };
-        App._workers.push(w);
+      App._workers = App._preloadWorkers || [];
+      App._preloadWorkers = null;
+      for (let i = 0; i < App._workers.length; i++) {
+        const idx = i;
+        App._workers[idx].onmessage = (e) => App.onWorkerMessage(idx, e.data);
+        App._workers[idx].onerror = (e) => console.error('Worker ' + idx + ' error:', e);
       }
-      setTimeout(() => { if (!cameraStarted) App.setStatus('Loading wasm... please wait'); }, 3000);
-      setTimeout(() => { if (!cameraStarted) { App.setStatus('Wasm timeout, starting anyway'); startCamera(); } }, 30000);
     },
 
     initCamera: function() {
