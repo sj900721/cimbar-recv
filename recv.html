@@ -473,6 +473,19 @@
         } catch(e) { console.error('manifest parse error', e); }
       } else {
         const encodeId = App._lastCompletedEncodeId;
+        // simpleMode: no manifest, single stream — download directly
+        if (!Assembler.manifest) {
+          const blob = new Blob([bytes], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = name;
+          a.click();
+          URL.revokeObjectURL(url);
+          App.onComplete(name);
+          ChunkStore.clear();
+          return;
+        }
         ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
           Assembler.addChunk(encodeId, name, bytes);
           App.setStatus('Chunk received: ' + name);
