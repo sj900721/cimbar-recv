@@ -239,8 +239,7 @@
             const pct = Math.round(report[0] * 100);
             const label = App._receivingManifest ? 'Receiving file info...' :
               (Assembler.manifest ? `Receiving data (${Assembler.completedChunks.size + 1}/${Assembler.manifest.chunk_count})...` : 'Receiving file...');
-            App.setStreamProgress(pct, label);
-            App.setStatus(label + ' ' + pct + '%');
+            App.setStreamProgress(pct, label); // setStatus throttled inside setStreamProgress
           }
           if (res > 0) {
             const id = Number(res & 0xFFFFFFFFn);
@@ -465,10 +464,16 @@
     },
 
     setStreamProgress: function(pct, label) {
+      const now = performance.now();
+      if (now - (App._lastProgressUpdate || 0) < 500) return;
+      App._lastProgressUpdate = now;
       document.getElementById('progress-container').classList.add('visible');
       document.getElementById('stream-bar-fill').style.width = pct + '%';
       document.getElementById('stream-bar-pct').textContent = pct + '%';
-      if (label) document.getElementById('stream-bar-label').textContent = label;
+      if (label) {
+        document.getElementById('stream-bar-label').textContent = label;
+        App.setStatus(label + ' ' + pct + '%');
+      }
     },
 
     hideStreamProgress: function() {
