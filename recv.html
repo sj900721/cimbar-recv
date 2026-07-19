@@ -8,34 +8,31 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100vh; background: #000; color: #fff; font-family: -apple-system, sans-serif; overflow: hidden; }
-    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; }
     #status {
-      position: fixed; top: 0; left: 0; right: 0; z-index: 1;
+      position: fixed; top: 0; left: 0; right: 0;
       background: rgba(0,0,0,0.6); padding: 8px 16px;
       font-size: 14px; display: flex; justify-content: space-between; align-items: center;
     }
     #progress-container {
-      position: fixed; bottom: 0; left: 0; right: 0; z-index: 1;
-      padding: 8px 12px; background: rgba(0,0,0,0.7);
-      display: none;
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 8px; background: rgba(0,0,0,0.6);
     }
-    #progress-container.visible { display: block; }
-    #stream-bar-wrap {
-      display: flex; align-items: center; gap: 8px; margin-bottom: 4px;
+    .chunk-bar {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 4px; font-size: 12px;
     }
-    #stream-bar-label { font-size: 12px; color: #ccc; white-space: nowrap; min-width: 120px; }
-    #stream-bar-track { flex: 1; height: 10px; background: #333; border-radius: 5px; overflow: hidden; }
-    #stream-bar-fill { height: 100%; background: #4a90e2; width: 0%; transition: width 0.3s; border-radius: 5px; }
-    #chunks-overview { font-size: 12px; color: #aaa; display: none; }
-    #chunks-overview.visible { display: block; }
+    .chunk-bar .label { width: 80px; flex-shrink: 0; color: #aaa; }
+    .chunk-bar .bar { flex: 1; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+    .chunk-bar .fill { height: 100%; background: #4a90e2; width: 0%; transition: width 0.2s; border-radius: 4px; }
+    .chunk-bar .fill.done { background: #50c878; }
     #start-btn {
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
-      padding: 16px 32px; font-size: 18px; background: #50c878; color: #000;
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      padding: 16px 32px; font-size: 18px; background: #4a90e2; color: white;
       border: none; border-radius: 8px; cursor: pointer;
     }
-    #start-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
     #done-overlay {
-      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
       background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
       flex-direction: column; gap: 16px; font-size: 20px;
     }
@@ -51,21 +48,13 @@
   <div id="crosshair2"></div>
   <div id="status">
     <span id="status-text">Initializing...</span>
-    <span id="scan-rate" style="font-size:13px;color:#aaa;">⬤ --</span>
+    <span id="frame-counter">Frames: 0</span>
   </div>
-  <div id="progress-container">
-    <div id="stream-bar-wrap">
-      <span id="stream-bar-label">Receiving...</span>
-      <div id="stream-bar-track"><div id="stream-bar-fill"></div></div>
-      <span id="stream-bar-pct" style="font-size:12px;color:#ccc;min-width:36px;text-align:right;">0%</span>
-    </div>
-    <div id="chunks-overview"></div>
-  </div>
-  <button id="start-btn" onclick="App.start()" disabled>Start Scanning</button>
+  <div id="progress-container"></div>
+  <button id="start-btn" onclick="App.start()">Start Scanning</button>
   <div id="done-overlay">
-    <div id="done-title">&#x2705; Transfer Complete!</div>
+    <div>&#x2705; Transfer Complete!</div>
     <div id="done-filename" style="font-size:14px;color:#aaa;"></div>
-    <button id="btn-redownload" style="display:none" onclick="App.redownload()">Download Again</button>
     <button onclick="App.reset()">Scan Another File</button>
   </div>
 
@@ -138,11 +127,12 @@
 
     setManifest: function(manifest) {
       Assembler.manifest = manifest;
-      App.updateChunksOverview();
+      App.updateProgress();
     },
 
     addChunk: function(encodeId, name, bytes) {
       Assembler.completedChunks.set(encodeId, { name, bytes });
+      App.updateProgress();
       if (Assembler.manifest && Assembler.isComplete() && !Assembler._done) {
         Assembler._done = true;
         Assembler.reassemble();
@@ -225,29 +215,17 @@
       },
       on_decode: function(buff) {
         if (!buff.length) return;
-        if (!_fountainBuff) Sink.allocate();
-        if (buff.length > _fountainBuff.length) {
-          App.setStatus('buf overflow: pkt=' + buff.length + ' max=' + _fountainBuff.length);
-          return;
+        const fb = fountain_buff();
+        fb.set(buff);
+        const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
+        const report = Sink.get_report();
+        if (Array.isArray(report)) {
+          App.renderProgress(report);
         }
-        try {
-          const fb = fountain_buff();
-          fb.set(buff);
-          const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
-          const report = Sink.get_report();
-          if (Array.isArray(report) && report.length > 0) {
-            const pct = Math.round(report[0] * 100);
-            const label = App._receivingManifest ? 'Receiving file info...' :
-              (Assembler.manifest ? `Receiving data (${Assembler.completedChunks.size + 1}/${Assembler.manifest.chunk_count})...` : 'Receiving file...');
-            App.setStreamProgress(pct, label);
-            App.setStatus(label + ' ' + pct + '%');
-          }
-          if (res > 0) {
-            const id = Number(res & 0xFFFFFFFFn);
-            App.hideStreamProgress();
-            Sink.on_stream_complete(id);
-          }
-        } catch(e) { App.setStatus('decode err: ' + e.message); }
+        if (res > 0) {
+          const id = Number(res & 0xFFFFFFFFn);
+          Sink.on_stream_complete(id);
+        }
       },
       get_report: function() {
         if (!_errBuff) _errBuff = Module._malloc(_errBuffSize);
@@ -281,87 +259,45 @@
     _workerReady: null,
     _video: null,
     _intervalId: null,
+    _chunkProgressBars: new Map(), // encodeId -> DOM element
     _lastCompletedEncodeId: 0,
-    _receivingManifest: false,
-    _scanFpsLastTime: 0,
-    _scanFpsFrames: 0,
-    _simpleModeName: null,
-    _simpleModeBytes: null,
-    _savedSimpleMode: false,
 
     init: async function() {
       await ChunkStore.open();
+      // Restore any previously received chunks
       const saved = await ChunkStore.getAllChunks();
       for (const chunk of saved) {
         Assembler.completedChunks.set(chunk.encodeId, { name: chunk.name, bytes: chunk.bytes });
       }
-      // Restore simpleMode completed file for re-download
-      if (saved.length === 1 && !Assembler.manifest) {
-        const chunk = saved[0];
-        App._simpleModeName = chunk.name;
-        App._simpleModeBytes = chunk.bytes;
-        App._savedSimpleMode = true;
+      if (saved.length > 0) {
+        App.setStatus('Restored ' + saved.length + ' previously received chunk(s). Resume scanning.');
+      } else {
+        App.setStatus('Ready. Tap "Start Scanning".');
       }
-      App.setStatus('Loading... please wait');
-      App._savedChunksOnInit = saved.length;
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./recv-sw.js');
       }
-      App.preloadWorkers();
-    },
-
-    preloadWorkers: function() {
-      App._preloadWorkers = [];
-      let readyCount = 0;
-      for (let i = 0; i < 4; i++) {
-        const w = new Worker('recv-worker.js');
-        w.onmessage = (e) => {
-          if (e.data && e.data.ready) {
-            readyCount++;
-            if (readyCount === 1) {
-              const btn = document.getElementById('start-btn');
-              btn.disabled = false;
-              const n = App._savedChunksOnInit;
-              if (n > 0) {
-                App.setStatus(`Resuming — ${n} chunk${n > 1 ? 's' : ''} already received`);
-              } else {
-                App.setStatus('Ready — tap Start Scanning');
-              }
-              if (App._savedSimpleMode) {
-                document.getElementById('done-filename').textContent = App._simpleModeName;
-                document.getElementById('done-overlay').classList.add('visible');
-                document.getElementById('btn-redownload').style.display = '';
-                App.setStatus('Previous file ready — download again or scan new file');
-              }
-            }
-          }
-        };
-        w.onerror = (e) => console.error('preload worker error', e);
-        App._preloadWorkers.push(w);
-      }
-      setTimeout(() => {
-        if (document.getElementById('start-btn').disabled) {
-          document.getElementById('start-btn').disabled = false;
-          App.setStatus('Ready — tap Start Scanning');
-        }
-      }, 20000);
     },
 
     start: function() {
       document.getElementById('start-btn').style.display = 'none';
       App._video = document.getElementById('video');
       App.initWorkers(4);
-      App.initCamera();
     },
 
     initWorkers: function(n) {
-      App._workers = App._preloadWorkers || [];
-      App._preloadWorkers = null;
-      for (let i = 0; i < App._workers.length; i++) {
-        const idx = i;
-        App._workers[idx].onmessage = (e) => App.onWorkerMessage(idx, e.data);
-        App._workers[idx].onerror = (e) => console.error('Worker ' + idx + ' error:', e);
+      App._workers = [];
+      let readyCount = 0;
+      const workerReady = new Promise(resolve => { App._workerReady = resolve; });
+      for (let i = 0; i < n; i++) {
+        const w = new Worker('recv-worker.js');
+        w.onmessage = (e) => App.onWorkerMessage(i, e.data);
+        w.onerror = (e) => console.error('Worker ' + i + ' error:', e);
+        App._workers.push(w);
       }
+      workerReady.then(() => {
+        App.initCamera();
+      });
     },
 
     initCamera: function() {
@@ -375,44 +311,36 @@
           frameRate: { ideal: 15 }
         }
       };
-      App.setStatus('Requesting camera...');
       navigator.mediaDevices.getUserMedia(constraints)
-        .catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }))
         .then(stream => {
           video.srcObject = stream;
           video.play();
           if (video.requestVideoFrameCallback) {
             video.requestVideoFrameCallback(App.onFrame);
           } else {
+            // Fallback for iOS < 15.4
             App._intervalId = setInterval(() => {
               if (!App._video.paused && !App._video.ended) {
                 App.onFrame(performance.now(), null);
               }
-            }, 66);
+            }, 66); // ~15 fps
           }
-          App.setStatus('Scanning for signal...');
+          App.setStatus('Scanning...');
         })
         .catch(err => App.setStatus('Camera error: ' + err));
     },
 
     onWorkerMessage: function(id, data) {
+      if (data.ready) { if (App._workerReady) App._workerReady(); return; }
       App._framesInFlight--;
-      if (data.failed_extract) { App._fe = (App._fe || 0) + 1; }
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
       if (data.buff && data.buff.length > 0) {
         App._recentDecode = App._counter;
-        App._dec = (App._dec || 0) + 1;
         App.setMode(data.mode);
         Sink.on_decode(data.buff);
       }
-      if (App._counter % 30 === 0) {
-        const fe = App._fe || 0;
-        const dec = App._dec || 0;
-        const total = fe + dec;
-        if (total > 0) App.setStatus(`fe:${fe} dec:${dec} ratio:${Math.round(dec/total*100)}%`);
-      }
-      App.updateScanRate();
+      document.getElementById('frame-counter').textContent = 'Frames: ' + App._counter;
     },
 
     onFrame: function(now, metadata) {
@@ -433,7 +361,6 @@
             await vf.copyTo(buff, vfparams);  // MUST await
             const format = vfparams.format || vf.format;
             const mode = 68;
-            if (App._counter <= 3) App.setStatus(`cam: ${width}x${height} ${format}`);
             App._workers[App._nextWorker].postMessage(
               { type: 'proc', pixels: buff, format, width, height, mode },
               [buff.buffer]
@@ -459,46 +386,28 @@
       document.getElementById('status-text').textContent = msg;
     },
 
-    updateScanRate: function() {
-      const now = performance.now();
-      App._scanFpsFrames++;
-      if (now - App._scanFpsLastTime >= 1000) {
-        const fps = App._scanFpsFrames;
-        App._scanFpsFrames = 0;
-        App._scanFpsLastTime = now;
-        const active = (App._counter - App._recentDecode) < 10;
-        const dot = active ? '<span style="color:#50c878">⬤</span>' : '<span style="color:#555">⬤</span>';
-        document.getElementById('scan-rate').innerHTML = dot + ' ' + fps + ' fps';
+    renderProgress: function(report) {
+      // report is array of floats 0.0-1.0 per active stream
+      // We update bars for currently active streams
+      const container = document.getElementById('progress-container');
+      // Simple update: recreate bars based on Assembler state
+    },
+
+    updateProgress: function() {
+      const container = document.getElementById('progress-container');
+      container.innerHTML = '';
+      if (!Assembler.manifest) return;
+      for (const chunkMeta of Assembler.manifest.chunks) {
+        const done = Assembler.completedChunks.has(chunkMeta.encode_id);
+        const bar = document.createElement('div');
+        bar.className = 'chunk-bar';
+        bar.innerHTML = `
+          <span class="label">Chunk ${chunkMeta.index}</span>
+          <div class="bar"><div class="fill${done ? ' done' : ''}" style="width:${done ? 100 : 0}%"></div></div>
+          <span style="font-size:11px;color:${done ? '#50c878' : '#888'}">${done ? '✓' : '...'}</span>
+        `;
+        container.appendChild(bar);
       }
-    },
-
-    setStreamProgress: function(pct, label) {
-      document.getElementById('progress-container').classList.add('visible');
-      document.getElementById('stream-bar-fill').style.width = pct + '%';
-      document.getElementById('stream-bar-pct').textContent = pct + '%';
-      if (label) document.getElementById('stream-bar-label').textContent = label;
-    },
-
-    hideStreamProgress: function() {
-      document.getElementById('progress-container').classList.remove('visible');
-      document.getElementById('stream-bar-fill').style.width = '0%';
-      document.getElementById('stream-bar-pct').textContent = '0%';
-    },
-
-    updateChunksOverview: function() {
-      if (!Assembler.manifest) {
-        document.getElementById('chunks-overview').classList.remove('visible');
-        return;
-      }
-      const total = Assembler.manifest.chunks.length;
-      const done = Assembler.completedChunks.size;
-      const el = document.getElementById('chunks-overview');
-      el.classList.add('visible');
-      const boxes = Assembler.manifest.chunks.map(c => {
-        const isDone = Assembler.completedChunks.has(c.encode_id);
-        return `<span style="display:inline-block;width:14px;height:14px;border-radius:3px;margin-right:3px;background:${isDone ? '#50c878' : '#444'};vertical-align:middle;"></span>`;
-      }).join('');
-      el.innerHTML = boxes + ` <span style="color:#ccc">${done} / ${total} chunks</span>`;
     },
 
     looksLikeManifest: function(bytes) {
@@ -512,58 +421,22 @@
       if (name === 'manifest.json' || App.looksLikeManifest(bytes)) {
         try {
           const manifest = JSON.parse(new TextDecoder().decode(bytes));
-          App._receivingManifest = false;
           Assembler.setManifest(manifest);
-          App.setStatus(`File: ${manifest.filename} (${manifest.chunk_count} chunk${manifest.chunk_count > 1 ? 's' : ''})`);
-          App.updateChunksOverview();
+          App.setStatus('Manifest: ' + manifest.filename + ' (' + manifest.chunk_count + ' chunks)');
         } catch(e) { console.error('manifest parse error', e); }
       } else {
-        if (!Assembler.manifest) {
-          // Save to IndexedDB for re-download, then trigger download
-          const encodeId = App._lastCompletedEncodeId;
-          ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
-            App._simpleModeName = name;
-            App._simpleModeBytes = bytes;
-            const blob = new Blob([bytes], { type: 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url; a.download = name; a.click();
-            URL.revokeObjectURL(url);
-            App.onComplete(name);
-          });
-          return;
-        }
         const encodeId = App._lastCompletedEncodeId;
         ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
           Assembler.addChunk(encodeId, name, bytes);
-          App.updateChunksOverview();
-          const done = Assembler.completedChunks.size;
-          const total = Assembler.manifest.chunk_count;
-          if (done < total) {
-            App.setStatus(`Chunk ${done}/${total} done — keep scanning`);
-          }
+          App.setStatus('Chunk received: ' + name);
         });
       }
     },
 
     onComplete: function(filename) {
-      App.hideStreamProgress();
-      document.getElementById('chunks-overview').classList.remove('visible');
       document.getElementById('done-filename').textContent = filename;
       document.getElementById('done-overlay').classList.add('visible');
-      App.setStatus('✅ Complete! Downloading...');
-      if (App._simpleModeBytes) {
-        document.getElementById('btn-redownload').style.display = '';
-      }
-    },
-
-    redownload: function() {
-      if (!App._simpleModeBytes || !App._simpleModeName) return;
-      const blob = new Blob([App._simpleModeBytes], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = App._simpleModeName; a.click();
-      URL.revokeObjectURL(url);
+      App.setStatus('Complete!');
     },
 
     reset: async function() {
@@ -572,23 +445,13 @@
       Assembler.manifest = null;
       Assembler.completedChunks.clear();
       Assembler._done = false;
-      App._receivingManifest = false;
-      App._simpleModeName = null;
-      App._simpleModeBytes = null;
-      App._savedSimpleMode = false;
-      document.getElementById('btn-redownload').style.display = 'none';
       document.getElementById('done-overlay').classList.remove('visible');
-      App.hideStreamProgress();
-      document.getElementById('chunks-overview').classList.remove('visible');
-      App.setStatus('Scanning for signal...');
+      document.getElementById('progress-container').innerHTML = '';
+      App.setStatus('Cleared. Scanning...');
     }
   };
 
-  var Module = {
-    locateFile: function(path) {
-      return 'vendor/' + path;
-    }
-  };
+  var Module = {};
   Module.onRuntimeInitialized = () => {
     App.init();
   };
