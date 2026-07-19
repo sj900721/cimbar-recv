@@ -397,12 +397,20 @@
 
     onWorkerMessage: function(id, data) {
       App._framesInFlight--;
+      if (data.failed_extract) { App._fe = (App._fe || 0) + 1; }
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
       if (data.buff && data.buff.length > 0) {
         App._recentDecode = App._counter;
+        App._dec = (App._dec || 0) + 1;
         App.setMode(data.mode);
         Sink.on_decode(data.buff);
+      }
+      if (App._counter % 30 === 0) {
+        const fe = App._fe || 0;
+        const dec = App._dec || 0;
+        const total = fe + dec;
+        if (total > 0) App.setStatus(`fe:${fe} dec:${dec} ratio:${Math.round(dec/total*100)}%`);
       }
       App.updateScanRate();
     },
@@ -425,6 +433,7 @@
             await vf.copyTo(buff, vfparams);  // MUST await
             const format = vfparams.format || vf.format;
             const mode = 68;
+            if (App._counter <= 3) App.setStatus(`cam: ${width}x${height} ${format}`);
             App._workers[App._nextWorker].postMessage(
               { type: 'proc', pixels: buff, format, width, height, mode },
               [buff.buffer]
