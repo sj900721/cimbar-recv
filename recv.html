@@ -63,8 +63,9 @@
   </div>
   <button id="start-btn" onclick="App.start()" disabled>Start Scanning</button>
   <div id="done-overlay">
-    <div>&#x2705; Transfer Complete!</div>
+    <div id="done-title">&#x2705; Transfer Complete!</div>
     <div id="done-filename" style="font-size:14px;color:#aaa;"></div>
+    <button id="btn-redownload" style="display:none" onclick="App.redownload()">Download Again</button>
     <button onclick="App.reset()">Scan Another File</button>
   </div>
 
@@ -291,6 +292,13 @@
       for (const chunk of saved) {
         Assembler.completedChunks.set(chunk.encodeId, { name: chunk.name, bytes: chunk.bytes });
       }
+      // Restore simpleMode completed file for re-download
+      if (saved.length === 1 && !Assembler.manifest) {
+        const chunk = saved[0];
+        App._simpleModeName = chunk.name;
+        App._simpleModeBytes = chunk.bytes;
+        App._savedSimpleMode = true;
+      }
       App.setStatus('Loading... please wait');
       App._savedChunksOnInit = saved.length;
       if ('serviceWorker' in navigator) {
@@ -315,6 +323,12 @@
                 App.setStatus(`Resuming — ${n} chunk${n > 1 ? 's' : ''} already received`);
               } else {
                 App.setStatus('Ready — tap Start Scanning');
+              }
+              if (App._savedSimpleMode) {
+                document.getElementById('done-filename').textContent = App._simpleModeName;
+                document.getElementById('done-overlay').classList.add('visible');
+                document.getElementById('btn-redownload').style.display = '';
+                App.setStatus('Previous file ready — download again or scan new file');
               }
             }
           }
@@ -493,18 +507,22 @@
           App.updateChunksOverview();
         } catch(e) { console.error('manifest parse error', e); }
       } else {
-        const encodeId = App._lastCompletedEncodeId;
         if (!Assembler.manifest) {
-          // simpleMode
-          const blob = new Blob([bytes], { type: 'application/octet-stream' });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = name; a.click();
-          URL.revokeObjectURL(url);
-          App.onComplete(name);
-          ChunkStore.clear();
+          // Save to IndexedDB for re-download, then trigger download
+          const encodeId = App._lastCompletedEncodeId;
+          ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
+            const blob = new Blob([bytes], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = name; a.click();
+            URL.revokeObjectURL(url);
+            App._simpleModeName = name;
+            App._simpleModeBytes = bytes;
+            App.onComplete(name);
+          });
           return;
         }
+        const encodeId = App._lastCompletedEncodeId;
         ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
           Assembler.addChunk(encodeId, name, bytes);
           App.updateChunksOverview();
@@ -523,6 +541,18 @@
       document.getElementById('done-filename').textContent = filename;
       document.getElementById('done-overlay').classList.add('visible');
       App.setStatus('✅ Complete! Downloading...');
+      if (App._simpleModeBytes) {
+        document.getElementById('btn-redownload').style.display = '';
+      }
+    },
+
+    redownload: function() {
+      if (!App._simpleModeBytes || !App._simpleModeName) return;
+      const blob = new Blob([App._simpleModeBytes], { type: 'application/octet-stream' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = App._simpleModeName; a.click();
+      URL.revokeObjectURL(url);
     },
 
     reset: async function() {
@@ -532,6 +562,10 @@
       Assembler.completedChunks.clear();
       Assembler._done = false;
       App._receivingManifest = false;
+      App._simpleModeName = null;
+      App._simpleModeBytes = null;
+      App._savedSimpleMode = false;
+      document.getElementById('btn-redownload').style.display = 'none';
       document.getElementById('done-overlay').classList.remove('visible');
       App.hideStreamProgress();
       document.getElementById('chunks-overview').classList.remove('visible');
