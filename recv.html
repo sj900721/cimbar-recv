@@ -8,14 +8,14 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { height: 100vh; background: #000; color: #fff; font-family: -apple-system, sans-serif; overflow: hidden; }
-    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; }
+    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
     #status {
-      position: fixed; top: 0; left: 0; right: 0;
+      position: fixed; top: 0; left: 0; right: 0; z-index: 1;
       background: rgba(0,0,0,0.6); padding: 8px 16px;
       font-size: 14px; display: flex; justify-content: space-between; align-items: center;
     }
     #progress-container {
-      position: fixed; bottom: 0; left: 0; right: 0;
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 1;
       padding: 8px; background: rgba(0,0,0,0.6);
     }
     .chunk-bar {
@@ -27,12 +27,13 @@
     .chunk-bar .fill { height: 100%; background: #4a90e2; width: 0%; transition: width 0.2s; border-radius: 4px; }
     .chunk-bar .fill.done { background: #50c878; }
     #start-btn {
-      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-      padding: 16px 32px; font-size: 18px; background: #4a90e2; color: white;
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 2;
+      padding: 16px 32px; font-size: 18px; background: #50c878; color: #000;
       border: none; border-radius: 8px; cursor: pointer;
     }
+    #start-btn:disabled { background: #555; color: #999; cursor: not-allowed; }
     #done-overlay {
-      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;
       background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
       flex-direction: column; gap: 16px; font-size: 20px;
     }
@@ -48,10 +49,10 @@
   <div id="crosshair2"></div>
   <div id="status">
     <span id="status-text">Initializing...</span>
-    <span id="frame-counter">Frames: 0</span>
+    <span id="scan-rate" style="font-size:13px;color:#aaa;">⬤ --</span>
   </div>
   <div id="progress-container"></div>
-  <button id="start-btn" onclick="App.start()">Start Scanning</button>
+  <button id="start-btn" onclick="App.start()" disabled>Start Scanning</button>
   <div id="done-overlay">
     <div>&#x2705; Transfer Complete!</div>
     <div id="done-filename" style="font-size:14px;color:#aaa;"></div>
@@ -215,17 +216,26 @@
       },
       on_decode: function(buff) {
         if (!buff.length) return;
-        const fb = fountain_buff();
-        fb.set(buff);
-        const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
-        const report = Sink.get_report();
-        if (Array.isArray(report)) {
-          App.renderProgress(report);
+        if (!_fountainBuff) Sink.allocate();
+        if (buff.length > _fountainBuff.length) {
+          App.setStatus('buf overflow: pkt=' + buff.length + ' max=' + _fountainBuff.length);
+          return;
         }
-        if (res > 0) {
-          const id = Number(res & 0xFFFFFFFFn);
-          Sink.on_stream_complete(id);
-        }
+        try {
+          const fb = fountain_buff();
+          fb.set(buff);
+          const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
+          const report = Sink.get_report();
+          if (Array.isArray(report) && report.length > 0) {
+            const pct = Math.round(report[0] * 100);
+            App.setStatus('Scanning... ' + pct + '%');
+          }
+          if (res > 0) {
+            const id = Number(res & 0xFFFFFFFFn);
+            App.setStatus('Stream complete id=' + id);
+            Sink.on_stream_complete(id);
+          }
+        } catch(e) { App.setStatus('decode err: ' + e.message); }
       },
       get_report: function() {
         if (!_errBuff) _errBuff = Module._malloc(_errBuffSize);
@@ -261,43 +271,68 @@
     _intervalId: null,
     _chunkProgressBars: new Map(), // encodeId -> DOM element
     _lastCompletedEncodeId: 0,
+    _scanFpsLastTime: 0,
+    _scanFpsFrames: 0,
 
     init: async function() {
       await ChunkStore.open();
-      // Restore any previously received chunks
       const saved = await ChunkStore.getAllChunks();
       for (const chunk of saved) {
         Assembler.completedChunks.set(chunk.encodeId, { name: chunk.name, bytes: chunk.bytes });
       }
-      if (saved.length > 0) {
-        App.setStatus('Restored ' + saved.length + ' previously received chunk(s). Resume scanning.');
-      } else {
-        App.setStatus('Ready. Tap "Start Scanning".');
-      }
+      App.setStatus('Loading... please wait');
+      App._savedChunksOnInit = saved.length;
       if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./recv-sw.js');
       }
+      App.preloadWorkers();
+    },
+
+    preloadWorkers: function() {
+      App._preloadWorkers = [];
+      let readyCount = 0;
+      for (let i = 0; i < 4; i++) {
+        const w = new Worker('recv-worker.js');
+        w.onmessage = (e) => {
+          if (e.data && e.data.ready) {
+            readyCount++;
+            if (readyCount === 1) {
+              const btn = document.getElementById('start-btn');
+              btn.disabled = false;
+              if (App._savedChunksOnInit > 0) {
+                App.setStatus('Restored ' + App._savedChunksOnInit + ' chunk(s). Tap "Start Scanning".');
+              } else {
+                App.setStatus('Ready. Tap "Start Scanning".');
+              }
+            }
+          }
+        };
+        w.onerror = (e) => console.error('preload worker error', e);
+        App._preloadWorkers.push(w);
+      }
+      setTimeout(() => {
+        if (document.getElementById('start-btn').disabled) {
+          document.getElementById('start-btn').disabled = false;
+          App.setStatus('Ready. Tap "Start Scanning".');
+        }
+      }, 20000);
     },
 
     start: function() {
       document.getElementById('start-btn').style.display = 'none';
       App._video = document.getElementById('video');
       App.initWorkers(4);
+      App.initCamera();
     },
 
     initWorkers: function(n) {
-      App._workers = [];
-      let readyCount = 0;
-      const workerReady = new Promise(resolve => { App._workerReady = resolve; });
-      for (let i = 0; i < n; i++) {
-        const w = new Worker('recv-worker.js');
-        w.onmessage = (e) => App.onWorkerMessage(i, e.data);
-        w.onerror = (e) => console.error('Worker ' + i + ' error:', e);
-        App._workers.push(w);
+      App._workers = App._preloadWorkers || [];
+      App._preloadWorkers = null;
+      for (let i = 0; i < App._workers.length; i++) {
+        const idx = i;
+        App._workers[idx].onmessage = (e) => App.onWorkerMessage(idx, e.data);
+        App._workers[idx].onerror = (e) => console.error('Worker ' + idx + ' error:', e);
       }
-      workerReady.then(() => {
-        App.initCamera();
-      });
     },
 
     initCamera: function() {
@@ -311,19 +346,20 @@
           frameRate: { ideal: 15 }
         }
       };
+      App.setStatus('Requesting camera...');
       navigator.mediaDevices.getUserMedia(constraints)
+        .catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }))
         .then(stream => {
           video.srcObject = stream;
           video.play();
           if (video.requestVideoFrameCallback) {
             video.requestVideoFrameCallback(App.onFrame);
           } else {
-            // Fallback for iOS < 15.4
             App._intervalId = setInterval(() => {
               if (!App._video.paused && !App._video.ended) {
                 App.onFrame(performance.now(), null);
               }
-            }, 66); // ~15 fps
+            }, 66);
           }
           App.setStatus('Scanning...');
         })
@@ -331,7 +367,6 @@
     },
 
     onWorkerMessage: function(id, data) {
-      if (data.ready) { if (App._workerReady) App._workerReady(); return; }
       App._framesInFlight--;
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
@@ -340,7 +375,7 @@
         App.setMode(data.mode);
         Sink.on_decode(data.buff);
       }
-      document.getElementById('frame-counter').textContent = 'Frames: ' + App._counter;
+      App.updateScanRate();
     },
 
     onFrame: function(now, metadata) {
@@ -386,6 +421,19 @@
       document.getElementById('status-text').textContent = msg;
     },
 
+    updateScanRate: function() {
+      const now = performance.now();
+      App._scanFpsFrames++;
+      if (now - App._scanFpsLastTime >= 1000) {
+        const fps = App._scanFpsFrames;
+        App._scanFpsFrames = 0;
+        App._scanFpsLastTime = now;
+        const active = (App._counter - App._recentDecode) < 10;
+        const dot = active ? '<span style="color:#50c878">⬤</span>' : '<span style="color:#555">⬤</span>';
+        document.getElementById('scan-rate').innerHTML = dot + ' ' + fps + ' fps';
+      }
+    },
+
     renderProgress: function(report) {
       // report is array of floats 0.0-1.0 per active stream
       // We update bars for currently active streams
@@ -426,6 +474,19 @@
         } catch(e) { console.error('manifest parse error', e); }
       } else {
         const encodeId = App._lastCompletedEncodeId;
+        // simpleMode: no manifest, single stream — download directly
+        if (!Assembler.manifest) {
+          const blob = new Blob([bytes], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = name;
+          a.click();
+          URL.revokeObjectURL(url);
+          App.onComplete(name);
+          ChunkStore.clear();
+          return;
+        }
         ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
           Assembler.addChunk(encodeId, name, bytes);
           App.setStatus('Chunk received: ' + name);
@@ -451,7 +512,11 @@
     }
   };
 
-  var Module = {};
+  var Module = {
+    locateFile: function(path) {
+      return 'vendor/' + path;
+    }
+  };
   Module.onRuntimeInitialized = () => {
     App.init();
   };
