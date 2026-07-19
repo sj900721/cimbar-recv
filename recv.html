@@ -290,15 +290,21 @@
       let readyCount = 0;
       let cameraStarted = false;
       const startCamera = () => { if (!cameraStarted) { cameraStarted = true; App.initCamera(); } };
-      const workerReady = new Promise(resolve => { App._workerReady = resolve; });
       for (let i = 0; i < n; i++) {
         const w = new Worker('recv-worker.js');
-        w.onmessage = (e) => App.onWorkerMessage(i, e.data);
+        w.onmessage = (e) => {
+          if (e.data && e.data.ready) {
+            readyCount++;
+            if (readyCount === 1) startCamera();
+          } else {
+            App.onWorkerMessage(i, e.data);
+          }
+        };
         w.onerror = (e) => { console.error('Worker ' + i + ' error:', e); startCamera(); };
         App._workers.push(w);
       }
-      workerReady.then(startCamera);
-      setTimeout(startCamera, 3000);
+      // fallback: if wasm takes too long, start camera anyway
+      setTimeout(startCamera, 8000);
     },
 
     initCamera: function() {
@@ -332,7 +338,6 @@
     },
 
     onWorkerMessage: function(id, data) {
-      if (data.ready) { if (App._workerReady) App._workerReady(); return; }
       App._framesInFlight--;
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
