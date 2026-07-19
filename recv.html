@@ -285,6 +285,9 @@
     _receivingManifest: false,
     _scanFpsLastTime: 0,
     _scanFpsFrames: 0,
+    _simpleModeName: null,
+    _simpleModeBytes: null,
+    _savedSimpleMode: false,
 
     init: async function() {
       await ChunkStore.open();
@@ -511,13 +514,13 @@
           // Save to IndexedDB for re-download, then trigger download
           const encodeId = App._lastCompletedEncodeId;
           ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
+            App._simpleModeName = name;
+            App._simpleModeBytes = bytes;
             const blob = new Blob([bytes], { type: 'application/octet-stream' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url; a.download = name; a.click();
             URL.revokeObjectURL(url);
-            App._simpleModeName = name;
-            App._simpleModeBytes = bytes;
             App.onComplete(name);
           });
           return;
@@ -561,7 +564,7 @@
       Assembler.manifest = null;
       Assembler.completedChunks.clear();
       Assembler._done = false;
-      App._receivingManifest = false;
+      App._receivingManifest = true;
       App._simpleModeName = null;
       App._simpleModeBytes = null;
       App._savedSimpleMode = false;

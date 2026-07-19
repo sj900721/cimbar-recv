@@ -1,4 +1,4 @@
-var _cacheName = 'cimbar-transfer-recv-v14';
+var _cacheName = 'cimbar-transfer-recv-v16';
 var _cacheFiles = [
   'recv.html',
   'recv-worker.js',
