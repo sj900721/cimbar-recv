@@ -49,7 +49,7 @@
   <div id="crosshair2"></div>
   <div id="status">
     <span id="status-text">Initializing...</span>
-    <span id="frame-counter">Frames: 0</span>
+    <span id="scan-rate" style="font-size:13px;color:#aaa;">⬤ --</span>
   </div>
   <div id="progress-container"></div>
   <button id="start-btn" onclick="App.start()" disabled>Start Scanning</button>
@@ -272,6 +272,8 @@
     _intervalId: null,
     _chunkProgressBars: new Map(), // encodeId -> DOM element
     _lastCompletedEncodeId: 0,
+    _scanFpsLastTime: 0,
+    _scanFpsFrames: 0,
 
     init: async function() {
       await ChunkStore.open();
@@ -367,27 +369,14 @@
 
     onWorkerMessage: function(id, data) {
       App._framesInFlight--;
-      if (data.error && !data.nodata && !data.failed_extract) {
-        App._dbg_errors = (App._dbg_errors || 0) + 1;
-        if (App._dbg_errors <= 3) App.setStatus('err: ' + JSON.stringify(data.res).slice(0, 80));
-      }
-      if (data.nodata) { App._dbg_nodata = (App._dbg_nodata || 0) + 1; }
-      if (data.failed_extract) { App._dbg_failext = (App._dbg_failext || 0) + 1; }
       if (data.nodata || data.failed_extract) return;
       if (data.res) return;
       if (data.buff && data.buff.length > 0) {
-        App._dbg_decoded = (App._dbg_decoded || 0) + 1;
         App._recentDecode = App._counter;
         App.setMode(data.mode);
         Sink.on_decode(data.buff);
       }
-      const f = App._counter;
-      const nd = App._dbg_nodata || 0;
-      const fe = App._dbg_failext || 0;
-      const dec = App._dbg_decoded || 0;
-      const err = App._dbg_errors || 0;
-      const res = App._dbg_lastRes || 0;
-      document.getElementById('frame-counter').textContent = `F:${f} nd:${nd} fe:${fe} dec:${dec} err:${err} res:${res}`;
+      App.updateScanRate();
     },
 
     onFrame: function(now, metadata) {
@@ -431,6 +420,19 @@
 
     setStatus: function(msg) {
       document.getElementById('status-text').textContent = msg;
+    },
+
+    updateScanRate: function() {
+      const now = performance.now();
+      App._scanFpsFrames++;
+      if (now - App._scanFpsLastTime >= 1000) {
+        const fps = App._scanFpsFrames;
+        App._scanFpsFrames = 0;
+        App._scanFpsLastTime = now;
+        const active = (App._counter - App._recentDecode) < 10;
+        const dot = active ? '<span style="color:#50c878">⬤</span>' : '<span style="color:#555">⬤</span>';
+        document.getElementById('scan-rate').innerHTML = dot + ' ' + fps + ' fps';
+      }
     },
 
     renderProgress: function(report) {
