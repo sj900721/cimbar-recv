@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, user-scalable=no">
+  <title>Cimbar Receiver</title>
+  <link rel="manifest" href="recv-manifest.json">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100vh; background: #000; color: #fff; font-family: -apple-system, sans-serif; overflow: hidden; }
+    #video { position: fixed; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; z-index: -1; }
+    #status {
+      position: fixed; top: 0; left: 0; right: 0;
+      background: rgba(0,0,0,0.6); padding: 8px 16px;
+      font-size: 14px; display: flex; justify-content: space-between; align-items: center;
+    }
+    #progress-container {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      padding: 8px; background: rgba(0,0,0,0.6);
+    }
+    .chunk-bar {
+      display: flex; align-items: center; gap: 8px;
+      margin-bottom: 4px; font-size: 12px;
+    }
+    .chunk-bar .label { width: 80px; flex-shrink: 0; color: #aaa; }
+    .chunk-bar .bar { flex: 1; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+    .chunk-bar .fill { height: 100%; background: #4a90e2; width: 0%; transition: width 0.2s; border-radius: 4px; }
+    .chunk-bar .fill.done { background: #50c878; }
+    #start-btn {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      padding: 16px 32px; font-size: 18px; background: #4a90e2; color: white;
+      border: none; border-radius: 8px; cursor: pointer;
+    }
+    #done-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.85); align-items: center; justify-content: center;
+      flex-direction: column; gap: 16px; font-size: 20px;
+    }
+    #done-overlay.visible { display: flex; }
+    #done-overlay button { padding: 12px 24px; font-size: 16px; background: #50c878; border: none; border-radius: 8px; cursor: pointer; color: #000; }
+    #crosshair1 { position: fixed; top: 15%; right: 20%; width: 5%; height: 5%; z-index: 1; border-right: 3px solid rgba(255,255,255,0.5); border-top: 3px solid rgba(255,255,255,0.5); }
+    #crosshair2 { position: fixed; bottom: 20%; left: 15%; width: 5%; height: 5%; z-index: 1; border-left: 3px solid rgba(255,255,255,0.5); border-bottom: 3px solid rgba(255,255,255,0.5); }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline muted></video>
+  <div id="crosshair1"></div>
+  <div id="crosshair2"></div>
+  <div id="status">
+    <span id="status-text">Initializing...</span>
+    <span id="frame-counter">Frames: 0</span>
+  </div>
+  <div id="progress-container"></div>
+  <button id="start-btn" onclick="App.start()">Start Scanning</button>
+  <div id="done-overlay">
+    <div>&#x2705; Transfer Complete!</div>
+    <div id="done-filename" style="font-size:14px;color:#aaa;"></div>
+    <button onclick="App.reset()">Scan Another File</button>
+  </div>
+
+  <script src="vendor/zstd.js"></script>
+  <script>
+  // Override Zstd.download_blob to intercept decompressed bytes instead of
+  // triggering a browser download. zstd.js calls this after decompression.
+  Zstd.download_blob = function(name, blob) {
+    blob.arrayBuffer().then(function(ab) {
+      App.onDecompressed(name, new Uint8Array(ab));
+    });
+  };
+
+  // Recv stub — zstd.js in this build uses Zstd.download_blob not Recv.download_bytes,
+  // but we define Recv for forward-compatibility with alternate zstd.js builds.
+  var Recv = {
+    download_bytes: function(buff, name) {
+      App.onDecompressed(name, buff);
+    },
+    set_HTML: function() {},
+    set_title: function() {},
+    set_error: function() {}
+  };
+  </script>
+  <script>
+  // ── IndexedDB chunk store ──────────────────────────────────────────────
+  const ChunkStore = {
+    _db: null,
+    open: function() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open('cimbar-transfer', 1);
+        req.onupgradeneeded = (e) => {
+          e.target.result.createObjectStore('chunks', { keyPath: 'encodeId' });
+        };
+        req.onsuccess = (e) => { ChunkStore._db = e.target.result; resolve(); };
+        req.onerror = (e) => reject(e.target.error);
+      });
+    },
+    saveChunk: function(encodeId, name, bytes) {
+      return new Promise((resolve, reject) => {
+        const tx = ChunkStore._db.transaction('chunks', 'readwrite');
+        tx.objectStore('chunks').put({ encodeId, name, bytes: bytes.slice() });
+        tx.oncomplete = resolve;
+        tx.onerror = (e) => reject(e.target.error);
+      });
+    },
+    getAllChunks: function() {
+      return new Promise((resolve, reject) => {
+        const tx = ChunkStore._db.transaction('chunks', 'readonly');
+        const req = tx.objectStore('chunks').getAll();
+        req.onsuccess = (e) => resolve(e.target.result);
+        req.onerror = (e) => reject(e.target.error);
+      });
+    },
+    clear: function() {
+      return new Promise((resolve, reject) => {
+        const tx = ChunkStore._db.transaction('chunks', 'readwrite');
+        tx.objectStore('chunks').clear();
+        tx.oncomplete = resolve;
+        tx.onerror = (e) => reject(e.target.error);
+      });
+    }
+  };
+
+  // ── Manifest + reassembly ─────────────────────────────────────────────
+  const Assembler = {
+    manifest: null,
+    completedChunks: new Map(), // encodeId -> { name, bytes }
+    _done: false,
+
+    setManifest: function(manifest) {
+      Assembler.manifest = manifest;
+      App.updateProgress();
+    },
+
+    addChunk: function(encodeId, name, bytes) {
+      Assembler.completedChunks.set(encodeId, { name, bytes });
+      App.updateProgress();
+      if (Assembler.manifest && Assembler.isComplete() && !Assembler._done) {
+        Assembler._done = true;
+        Assembler.reassemble();
+      }
+    },
+
+    isComplete: function() {
+      if (!Assembler.manifest) return false;
+      for (const chunk of Assembler.manifest.chunks) {
+        if (!Assembler.completedChunks.has(chunk.encode_id)) return false;
+      }
+      return true;
+    },
+
+    sha256Hex: async function(bytes) {
+      const buf = await crypto.subtle.digest('SHA-256', bytes);
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+    },
+
+    reassemble: async function() {
+      const m = Assembler.manifest;
+      App.setStatus('Reassembling ' + m.filename + '...');
+      try {
+        // Verify and collect chunks in order
+        const buffers = [];
+        for (const chunkMeta of m.chunks) {
+          const chunk = Assembler.completedChunks.get(chunkMeta.encode_id);
+          if (!chunk) throw new Error('Missing chunk ' + chunkMeta.index);
+          const sha = await Assembler.sha256Hex(chunk.bytes);
+          if (sha !== chunkMeta.sha256) throw new Error('SHA256 mismatch on chunk ' + chunkMeta.index);
+          buffers.push(chunk.bytes);
+        }
+        // Concatenate
+        const total = buffers.reduce((s, b) => s + b.length, 0);
+        const out = new Uint8Array(total);
+        let offset = 0;
+        for (const buf of buffers) { out.set(buf, offset); offset += buf.length; }
+        // Verify full SHA256
+        const finalSha = await Assembler.sha256Hex(out);
+        if (finalSha !== m.sha256) throw new Error('Full-file SHA256 mismatch!');
+        // Download
+        const blob = new Blob([out], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = m.filename;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        App.onComplete(m.filename);
+      } catch (e) {
+        App.setStatus('Error: ' + e.message);
+        console.error(e);
+      }
+    }
+  };
+
+  // ── Sink (cimbar decode callbacks) ────────────────────────────────────
+  var Sink = (function() {
+    var _fountainBuff;
+    var _errBuff;
+    var _errBuffSize = 1024;
+
+    function fountain_buff() {
+      if (_fountainBuff.buffer !== Module.HEAPU8.buffer) {
+        _fountainBuff = new Uint8Array(Module.HEAPU8.buffer, _fountainBuff.byteOffset, _fountainBuff.byteLength);
+      }
+      return _fountainBuff;
+    }
+
+    return {
+      allocate: function() {
+        const size = Module._cimbard_get_bufsize();
+        if (_fountainBuff && size > _fountainBuff.length) {
+          Module._free(_fountainBuff.byteOffset);
+          _fountainBuff = undefined;
+        }
+        if (!_fountainBuff) {
+          const ptr = Module._malloc(size);
+          _fountainBuff = new Uint8Array(Module.HEAPU8.buffer, ptr, size);
+        }
+      },
+      on_decode: function(buff) {
+        if (!buff.length) return;
+        const fb = fountain_buff();
+        fb.set(buff);
+        const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
+        const report = Sink.get_report();
+        if (Array.isArray(report)) {
+          App.renderProgress(report);
+        }
+        if (res > 0) {
+          const id = Number(res & 0xFFFFFFFFn);
+          Sink.on_stream_complete(id);
+        }
+      },
+      get_report: function() {
+        if (!_errBuff) _errBuff = Module._malloc(_errBuffSize);
+        const len = Module._cimbard_get_report(_errBuff, _errBuffSize);
+        if (len > 0) {
+          const view = new Uint8Array(Module.HEAPU8.buffer, _errBuff, len);
+          try { return JSON.parse(new TextDecoder().decode(view)); } catch(e) { return new TextDecoder().decode(view); }
+        }
+      },
+      on_stream_complete: function(id) {
+        App._lastCompletedEncodeId = id;
+        const size = Module._cimbard_get_filesize(id);
+        if (!_errBuff) _errBuff = Module._malloc(_errBuffSize);
+        let name = id + '.' + size;
+        const fnsize = Module._cimbard_get_filename(id, _errBuff, _errBuffSize);
+        if (fnsize > 0) {
+          name = new TextDecoder().decode(new Uint8Array(Module.HEAPU8.buffer, _errBuff, fnsize));
+        }
+        Zstd.decompress(name, id); // triggers Zstd.download_blob(name, blob) on completion
+      }
+    };
+  })();
+
+  // ── App controller ─────────────────────────────────────────────────────
+  var App = {
+    _counter: 0,
+    _workers: [],
+    _nextWorker: 0,
+    _framesInFlight: 0,
+    _recentDecode: -1,
+    _workerReady: null,
+    _video: null,
+    _intervalId: null,
+    _chunkProgressBars: new Map(), // encodeId -> DOM element
+    _lastCompletedEncodeId: 0,
+
+    init: async function() {
+      await ChunkStore.open();
+      // Restore any previously received chunks
+      const saved = await ChunkStore.getAllChunks();
+      for (const chunk of saved) {
+        Assembler.completedChunks.set(chunk.encodeId, { name: chunk.name, bytes: chunk.bytes });
+      }
+      if (saved.length > 0) {
+        App.setStatus('Restored ' + saved.length + ' previously received chunk(s). Resume scanning.');
+      } else {
+        App.setStatus('Ready. Tap "Start Scanning".');
+      }
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('./recv-sw.js');
+      }
+    },
+
+    start: function() {
+      document.getElementById('start-btn').style.display = 'none';
+      App._video = document.getElementById('video');
+      App.initWorkers(4);
+    },
+
+    initWorkers: function(n) {
+      App._workers = [];
+      let readyCount = 0;
+      const workerReady = new Promise(resolve => { App._workerReady = resolve; });
+      for (let i = 0; i < n; i++) {
+        const w = new Worker('recv-worker.js');
+        w.onmessage = (e) => App.onWorkerMessage(i, e.data);
+        w.onerror = (e) => console.error('Worker ' + i + ' error:', e);
+        App._workers.push(w);
+      }
+      workerReady.then(() => {
+        App.initCamera();
+      });
+    },
+
+    initCamera: function() {
+      const video = App._video;
+      const constraints = {
+        audio: false,
+        video: {
+          width: { min: 720, ideal: 1920 },
+          height: { min: 720, ideal: 1080 },
+          facingMode: 'environment',
+          frameRate: { ideal: 15 }
+        }
+      };
+      navigator.mediaDevices.getUserMedia(constraints)
+        .then(stream => {
+          video.srcObject = stream;
+          video.play();
+          if (video.requestVideoFrameCallback) {
+            video.requestVideoFrameCallback(App.onFrame);
+          } else {
+            // Fallback for iOS < 15.4
+            App._intervalId = setInterval(() => {
+              if (!App._video.paused && !App._video.ended) {
+                App.onFrame(performance.now(), null);
+              }
+            }, 66); // ~15 fps
+          }
+          App.setStatus('Scanning...');
+        })
+        .catch(err => App.setStatus('Camera error: ' + err));
+    },
+
+    onWorkerMessage: function(id, data) {
+      if (data.ready) { if (App._workerReady) App._workerReady(); return; }
+      App._framesInFlight--;
+      if (data.nodata || data.failed_extract) return;
+      if (data.res) return;
+      if (data.buff && data.buff.length > 0) {
+        App._recentDecode = App._counter;
+        App.setMode(data.mode);
+        Sink.on_decode(data.buff);
+      }
+      document.getElementById('frame-counter').textContent = 'Frames: ' + App._counter;
+    },
+
+    onFrame: function(now, metadata) {
+      App._counter++;
+      if (!App._workers.length) return;
+      if (App._nextWorker >= App._workers.length) App._nextWorker = 0;
+      if (App._framesInFlight <= 20) {
+        App._framesInFlight++;
+        (async () => {
+          try {
+            const vf = new VideoFrame(App._video, { timestamp: now });
+            const width = vf.displayWidth;
+            const height = vf.displayHeight;
+            let vfparams = {};
+            const supported = ["NV12", "I420"];
+            if (!supported.includes(vf.format)) vfparams.format = "RGBA";
+            const buff = new Uint8Array(vf.allocationSize(vfparams));
+            await vf.copyTo(buff, vfparams);  // MUST await
+            const format = vfparams.format || vf.format;
+            const mode = 68;
+            App._workers[App._nextWorker].postMessage(
+              { type: 'proc', pixels: buff, format, width, height, mode },
+              [buff.buffer]
+            );
+            App._nextWorker = (App._nextWorker + 1) % App._workers.length;
+            vf.close();
+          } catch(e) { App._framesInFlight--; console.log(e); }
+        })();
+      }
+      if (App._video.requestVideoFrameCallback) {
+        App._video.requestVideoFrameCallback(App.onFrame);
+      }
+    },
+
+    setMode: function(mode) {
+      if (mode && mode > 0) {
+        Module._cimbard_configure_decode(mode);
+        Sink.allocate();
+      }
+    },
+
+    setStatus: function(msg) {
+      document.getElementById('status-text').textContent = msg;
+    },
+
+    renderProgress: function(report) {
+      // report is array of floats 0.0-1.0 per active stream
+      // We update bars for currently active streams
+      const container = document.getElementById('progress-container');
+      // Simple update: recreate bars based on Assembler state
+    },
+
+    updateProgress: function() {
+      const container = document.getElementById('progress-container');
+      container.innerHTML = '';
+      if (!Assembler.manifest) return;
+      for (const chunkMeta of Assembler.manifest.chunks) {
+        const done = Assembler.completedChunks.has(chunkMeta.encode_id);
+        const bar = document.createElement('div');
+        bar.className = 'chunk-bar';
+        bar.innerHTML = `
+          <span class="label">Chunk ${chunkMeta.index}</span>
+          <div class="bar"><div class="fill${done ? ' done' : ''}" style="width:${done ? 100 : 0}%"></div></div>
+          <span style="font-size:11px;color:${done ? '#50c878' : '#888'}">${done ? '✓' : '...'}</span>
+        `;
+        container.appendChild(bar);
+      }
+    },
+
+    looksLikeManifest: function(bytes) {
+      try {
+        const text = new TextDecoder().decode(bytes.slice(0, 100));
+        return text.includes('cimbar-bigfile') || text.includes('"chunks"');
+      } catch(e) { return false; }
+    },
+
+    onDecompressed: function(name, bytes) {
+      if (name === 'manifest.json' || App.looksLikeManifest(bytes)) {
+        try {
+          const manifest = JSON.parse(new TextDecoder().decode(bytes));
+          Assembler.setManifest(manifest);
+          App.setStatus('Manifest: ' + manifest.filename + ' (' + manifest.chunk_count + ' chunks)');
+        } catch(e) { console.error('manifest parse error', e); }
+      } else {
+        const encodeId = App._lastCompletedEncodeId;
+        ChunkStore.saveChunk(encodeId, name, bytes).then(() => {
+          Assembler.addChunk(encodeId, name, bytes);
+          App.setStatus('Chunk received: ' + name);
+        });
+      }
+    },
+
+    onComplete: function(filename) {
+      document.getElementById('done-filename').textContent = filename;
+      document.getElementById('done-overlay').classList.add('visible');
+      App.setStatus('Complete!');
+    },
+
+    reset: async function() {
+      if (App._intervalId) { clearInterval(App._intervalId); App._intervalId = null; }
+      await ChunkStore.clear();
+      Assembler.manifest = null;
+      Assembler.completedChunks.clear();
+      Assembler._done = false;
+      document.getElementById('done-overlay').classList.remove('visible');
+      document.getElementById('progress-container').innerHTML = '';
+      App.setStatus('Cleared. Scanning...');
+    }
+  };
+
+  var Module = {};
+  Module.onRuntimeInitialized = () => {
+    App.init();
+  };
+  </script>
+  <script src="vendor/cimbar_js.js"></script>
+</body>
+</html>
