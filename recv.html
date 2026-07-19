@@ -217,14 +217,19 @@
       on_decode: function(buff) {
         if (!buff.length) return;
         if (!_fountainBuff) Sink.allocate();
+        if (buff.length > _fountainBuff.length) {
+          App.setStatus('buf overflow: pkt=' + buff.length + ' max=' + _fountainBuff.length);
+          return;
+        }
         try {
           const fb = fountain_buff();
           fb.set(buff);
           const res = Module._cimbard_fountain_decode(fb.byteOffset, buff.length);
           App._dbg_lastRes = res;
           const report = Sink.get_report();
-          if (Array.isArray(report)) {
-            App.renderProgress(report);
+          if (Array.isArray(report) && report.length > 0) {
+            const pct = Math.round(report[0] * 100);
+            App.setStatus('Scanning... ' + pct + '%');
           }
           if (res > 0) {
             const id = Number(res & 0xFFFFFFFFn);
