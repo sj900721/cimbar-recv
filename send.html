@@ -1727,8 +1727,13 @@ function applyLocale(locale, persist = true) {
 }
 
 // ============= 事件绑定 =============
+let _dropzoneClickTime = 0;
 $('dropzone').addEventListener('click', (e) => {
-  if (e.target.closest('button') || e.target.closest('#bundlePanel') || e.target.closest('#preparedPanel')) return;
+  if (e.target.closest('button') || e.target.closest('input') || e.target.closest('#bundlePanel') || e.target.closest('#preparedPanel')) return;
+  if (State.active || _packingBundle) return;
+  const now = Date.now();
+  if (now - _dropzoneClickTime < 500) return;
+  _dropzoneClickTime = now;
   $('fileInput').click();
 });
 $('fileInput').addEventListener('change', async (e) => {
