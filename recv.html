@@ -300,11 +300,11 @@
             App.onWorkerMessage(i, e.data);
           }
         };
-        w.onerror = (e) => { console.error('Worker ' + i + ' error:', e); startCamera(); };
+        w.onerror = (e) => { console.error('Worker ' + i + ' error:', e); App.setStatus('Worker error, retrying...'); startCamera(); };
         App._workers.push(w);
       }
-      // fallback: if wasm takes too long, start camera anyway
-      setTimeout(startCamera, 8000);
+      setTimeout(() => { if (!cameraStarted) App.setStatus('Loading wasm... please wait'); }, 3000);
+      setTimeout(() => { if (!cameraStarted) { App.setStatus('Wasm timeout, starting anyway'); startCamera(); } }, 30000);
     },
 
     initCamera: function() {
