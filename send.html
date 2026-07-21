@@ -1770,6 +1770,9 @@ $('dropzone').addEventListener('drop', async (e) => {
 $('btnAddFiles').addEventListener('click', (e) => {
   e.stopPropagation();
   if (_packingBundle) return;
+  const now = Date.now();
+  if (now - _dropzoneClickTime < 500) return;
+  _dropzoneClickTime = now;
   $('bundleFileInput').click();
 });
 async function collectDirFiles(dirHandle, prefix) {
@@ -1789,6 +1792,9 @@ async function collectDirFiles(dirHandle, prefix) {
 $('btnAddFolder').addEventListener('click', async (e) => {
   e.stopPropagation();
   if (_packingBundle) return;
+  const now = Date.now();
+  if (now - _dropzoneClickTime < 500) return;
+  _dropzoneClickTime = now;
   if (window.showDirectoryPicker) {
     try {
       const dirHandle = await window.showDirectoryPicker();
