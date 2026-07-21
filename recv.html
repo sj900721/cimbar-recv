@@ -190,6 +190,7 @@
         a.href = url; a.download = m.filename;
         document.body.appendChild(a); a.click(); document.body.removeChild(a);
         setTimeout(() => URL.revokeObjectURL(url), 2000);
+        await ChunkStore.clear();
         App.onComplete(m.filename);
       } catch (e) {
         App.setStatus('Error: ' + e.message);
@@ -569,7 +570,7 @@
       Assembler.manifest = null;
       Assembler.completedChunks.clear();
       Assembler._done = false;
-      App._receivingManifest = false;
+      App._receivingManifest = true;
       App._simpleModeName = null;
       App._simpleModeBytes = null;
       App._savedSimpleMode = false;

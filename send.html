@@ -1335,7 +1335,7 @@ async function prepareFile(file) {
         const slice = fileBytes.subarray(start, end);
         const sha = await sha256Hex(slice);
         chunks.push(slice);
-        chunkMeta.push({ index: i, size: slice.length, sha256: sha });
+        chunkMeta.push({ index: i, encode_id: State.encodeIdBase + 1 + i, size: slice.length, sha256: sha });
       }
       State.chunks = chunks;
       State.manifest = {
