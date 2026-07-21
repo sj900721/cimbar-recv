@@ -415,8 +415,9 @@
       if (App._framesInFlight <= 20) {
         App._framesInFlight++;
         (async () => {
+          let vf;
           try {
-            const vf = new VideoFrame(App._video, { timestamp: now });
+            vf = new VideoFrame(App._video, { timestamp: now });
             const width = vf.displayWidth;
             const height = vf.displayHeight;
             let vfparams = {};
@@ -431,8 +432,8 @@
               [buff.buffer]
             );
             App._nextWorker = (App._nextWorker + 1) % App._workers.length;
-            vf.close();
           } catch(e) { App._framesInFlight--; console.log(e); }
+          finally { if (vf) vf.close(); }
         })();
       }
       if (App._video.requestVideoFrameCallback) {
